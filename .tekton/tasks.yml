@@ -1,9 +1,10 @@
+---
 apiVersion: tekton.dev/v1beta1
 kind: Task
 metadata:
   name: cleanup
 spec:
-  description: This task will clean up a workspace by deleting all the files.
+  description: Delete everything inside the provided workspace.
   workspaces:
     - name: source
   steps:
@@ -21,7 +22,9 @@ spec:
         set -eu
         echo "Removing all files from ${WORKSPACE_SOURCE_PATH} ..."
         if [ -d "${WORKSPACE_SOURCE_PATH}" ] ; then
+          # regular files/dirs
           rm -rf "${WORKSPACE_SOURCE_PATH:?}"/*
+          # dotfiles (but not . or ..)
           rm -rf "${WORKSPACE_SOURCE_PATH:?}"/.[!.]*
           rm -rf "${WORKSPACE_SOURCE_PATH:?}"/..?*
         fi
@@ -29,22 +32,50 @@ spec:
 apiVersion: tekton.dev/v1beta1
 kind: Task
 metadata:
+  name: flake8
+spec:
+  description: Run flake8 linting with strict errors and basic quality thresholds.
+  workspaces:
+    - name: source
+  params:
+    - name: path
+      description: Path to lint (folder or module)
+      type: string
+      default: "service"
+  steps:
+    - name: flake8
+      image: python:3.9-slim
+      workingDir: $(workspaces.source.path)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        python -m pip install --upgrade pip setuptools wheel
+        pip install --no-cache-dir -r requirements.txt
+        # Fail on syntax/major errors first
+        flake8 "$(params.path)" --count --select=E9,F63,F7,F82 --show-source --statistics
+        # Then run with complexity/length thresholds
+        flake8 "$(params.path)" --count --max-complexity=10 --max-line-length=127 --statistics
+---
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
   name: nosetests
 spec:
+  description: Install dependencies and run the project's nose unit tests.
   workspaces:
     - name: source
   params:
     - name: args
       description: Arguments to pass to nose
       type: string
-      default: "-v"
+      default: "-v --with-spec --spec-color --with-coverage --cover-package=app"
   steps:
     - name: nosetests
       image: python:3.9-slim
       workingDir: $(workspaces.source.path)
       script: |
-        #!/bin/bash
-        set -e
-        python -m pip install --upgrade pip wheel
-        pip install -r requirements.txt
+        #!/usr/bin/env bash
+        set -euo pipefail
+        python -m pip install --upgrade pip setuptools wheel
+        pip install --no-cache-dir -r requirements.txt
         nosetests $(params.args)
